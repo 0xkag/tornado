@@ -144,17 +144,20 @@ class HTTPServer(TCPServer):
 
     """
     def __init__(self, request_callback, no_keep_alive=False, io_loop=None,
-                 xheaders=False, ssl_options=None, protocol=None, **kwargs):
+                 xheaders=False, ssl_options=None, protocol=None,
+                 max_header_length=16384, **kwargs):
         self.request_callback = request_callback
         self.no_keep_alive = no_keep_alive
         self.xheaders = xheaders
         self.protocol = protocol
+        self.max_header_length = max_header_length
         TCPServer.__init__(self, io_loop=io_loop, ssl_options=ssl_options,
                            **kwargs)
 
     def handle_stream(self, stream, address):
         HTTPConnection(stream, address, self.request_callback,
-                       self.no_keep_alive, self.xheaders, self.protocol)
+                       self.no_keep_alive, self.xheaders, self.protocol,
+                       self.max_header_length)
 
 
 class _BadRequestException(Exception):
@@ -169,7 +172,7 @@ class HTTPConnection(object):
     until the HTTP conection is closed.
     """
     def __init__(self, stream, address, request_callback, no_keep_alive=False,
-                 xheaders=False, protocol=None):
+                 xheaders=False, protocol=None, max_header_length=16384):
         self.stream = stream
         self.address = address
         # Save the socket's address family now so we know how to
@@ -180,12 +183,14 @@ class HTTPConnection(object):
         self.no_keep_alive = no_keep_alive
         self.xheaders = xheaders
         self.protocol = protocol
+        self.max_header_length = max_header_length
         self._request = None
         self._request_finished = False
         # Save stack context here, outside of any request.  This keeps
         # contexts from one request from leaking into the next.
         self._header_callback = stack_context.wrap(self._on_headers)
-        self.stream.read_until(b"\r\n\r\n", self._header_callback)
+        self.stream.read_until(b"\r\n\r\n", self._header_callback,
+                               maxlen=self.max_header_length)
         self._write_callback = None
         self._close_callback = None
 
@@ -265,11 +270,12 @@ class HTTPConnection(object):
             # Use a try/except instead of checking stream.closed()
             # directly, because in some cases the stream doesn't discover
             # that it's closed until you try to read from it.
-            self.stream.read_until(b"\r\n\r\n", self._header_callback)
+            self.stream.read_until(b"\r\n\r\n", self._header_callback,
+                                   maxlen=self.max_header_length)
         except iostream.StreamClosedError:
             self.close()
 
-    def _on_headers(self, data):
+    def _on_headers(self, data, maxlen=False):
         try:
             data = native_str(data.decode('latin1'))
             eol = data.find("\r\n")
@@ -280,6 +286,9 @@ class HTTPConnection(object):
                 raise _BadRequestException("Malformed HTTP request line")
             if not version.startswith("HTTP/"):
                 raise _BadRequestException("Malformed HTTP version in HTTP Request-Line")
+            if maxlen:
+                self.stream.write(b"HTTP/1.1 413 Entity Too Large\r\n\r\n")
+                raise _BadRequestException("Malformed HTTP request; headers too large")
             headers = httputil.HTTPHeaders.parse(data[eol:])
 
             # HTTPRequest wants an IP, not a full socket address

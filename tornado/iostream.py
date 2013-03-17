@@ -74,6 +74,7 @@ class BaseIOStream(object):
         self._write_buffer = collections.deque()
         self._read_buffer_size = 0
         self._write_buffer_frozen = False
+        self._read_maxlen = None
         self._read_delimiter = None
         self._read_regex = None
         self._read_bytes = None
@@ -127,7 +128,7 @@ class BaseIOStream(object):
         """
         return None
 
-    def read_until_regex(self, regex, callback):
+    def read_until_regex(self, regex, callback, maxlen=None):
         """Run ``callback`` when we read the given regex pattern.
 
         The callback will get the data read (including the data that
@@ -135,9 +136,10 @@ class BaseIOStream(object):
         """
         self._set_read_callback(callback)
         self._read_regex = re.compile(regex)
+        self._read_maxlen = maxlen
         self._try_inline_read()
 
-    def read_until(self, delimiter, callback):
+    def read_until(self, delimiter, callback, maxlen=None):
         """Run ``callback`` when we read the given delimiter.
 
         The callback will get the data read (including the delimiter)
@@ -145,6 +147,7 @@ class BaseIOStream(object):
         """
         self._set_read_callback(callback)
         self._read_delimiter = delimiter
+        self._read_maxlen = maxlen
         self._try_inline_read()
 
     def read_bytes(self, num_bytes, callback, streaming_callback=None):
@@ -470,12 +473,22 @@ class BaseIOStream(object):
                         self._read_callback = None
                         self._streaming_callback = None
                         self._read_delimiter = None
+                        self._read_maxlen = None
                         self._run_callback(callback,
                                            self._consume(loc + delimiter_len))
                         return True
                     if len(self._read_buffer) == 1:
                         break
                     _double_prefix(self._read_buffer)
+                    maxlen = self._read_maxlen
+                    if self._read_maxlen and len(self._read_buffer[0]) >= maxlen:
+                        callback = self._read_callback
+                        self._read_callback = None
+                        self._streaming_callback = None
+                        self._read_delimiter = None
+                        self._read_maxlen = None
+                        self._run_callback(callback, self._consume(maxlen), True)
+                        return True
         elif self._read_regex is not None:
             if self._read_buffer:
                 while True:
@@ -485,11 +498,21 @@ class BaseIOStream(object):
                         self._read_callback = None
                         self._streaming_callback = None
                         self._read_regex = None
+                        self._read_maxlen = None
                         self._run_callback(callback, self._consume(m.end()))
                         return True
                     if len(self._read_buffer) == 1:
                         break
                     _double_prefix(self._read_buffer)
+                    maxlen = self._read_maxlen
+                    if self._read_maxlen and len(self._read_buffer[0]) >= maxlen:
+                        callback = self._read_callback
+                        self._read_callback = None
+                        self._streaming_callback = None
+                        self._read_regex = None
+                        self._read_maxlen = None
+                        self._run_callback(callback, self._consume(maxlen), True)
+                        return True                      
         return False
 
     def _handle_write(self):

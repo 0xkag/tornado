@@ -253,6 +253,20 @@ class HTTPConnectionTest(AsyncHTTPTestCase):
         self.assertEqual(body, b"Got 1024 bytes in POST")
         stream.close()
 
+    def test_maxlen_headers(self):
+        stream = IOStream(socket.socket(), io_loop=self.io_loop)
+        stream.connect(("localhost", self.get_http_port()), callback=self.stop)
+        self.wait()
+        stream.write(b"\r\n".join([b"POST /hello HTTP/1.1",
+                                   b"Content-Length: 1024",
+                                   b"X-Bad-Header: " + 'a' * 16384,
+                                   b"Connection: close",
+                                   b"\r\n"]), callback=self.stop)
+        self.wait()
+        stream.read_until(b"\r\n\r\n", self.stop)
+        data = self.wait()
+        self.assertTrue(data.startswith(b"HTTP/1.1 413 "), data)
+        stream.close()
 
 class EchoHandler(RequestHandler):
     def get(self):
